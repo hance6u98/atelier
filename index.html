@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Atelier</title>
+<style>
+  * { box-sizing:border-box; -webkit-user-select:none; user-select:none;
+      -webkit-tap-highlight-color:transparent; }
+  body { margin:0; background:#111; color:#f2f2f2; padding:20px;
+         font:18px -apple-system, system-ui, sans-serif; }
+  h1 { font-size:22px; margin:0 0 16px; }
+  button { width:100%; border:0; border-radius:18px; font-weight:700; color:#fff; }
+  #conn { padding:18px; font-size:20px; background:#0a84ff; }
+  #ouvrir { margin-top:24px; padding:70px 0; font-size:34px; background:#30d158; color:#000; }
+  #ouvrir:disabled { opacity:.3; }
+  #ouvrir:active { transform:scale(.97); }
+  #statut { color:#8e8e93; margin-top:12px; min-height:24px; }
+</style>
+</head>
+<body>
+<h1>Atelier</h1>
+<button id="conn">Se connecter</button>
+<div id="statut">Approche-toi de l'atelier.</div>
+<button id="ouvrir" disabled>OUVRIR</button>
+
+<script>
+const SVC = "6f1d0001-7b3a-4c2e-9a51-2c0a8e5d4b10";
+const CMD = "6f1d0002-7b3a-4c2e-9a51-2c0a8e5d4b10";
+let appareil, cmd;
+const statut = t => document.getElementById("statut").textContent = t;
+const btnOuvrir = document.getElementById("ouvrir");
+const btnConn = document.getElementById("conn");
+
+async function connecter() {
+  try {
+    if (!navigator.bluetooth) { statut("Ouvre cette page dans l'appli Bluefy."); return; }
+    statut("Recherche…");
+    appareil = appareil || await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+    appareil.addEventListener("gattserverdisconnected", () => {
+      cmd = null; btnOuvrir.disabled = true;
+      btnConn.textContent = "Se reconnecter"; statut("Déconnecté.");
+    });
+    statut("Connexion…");
+    const serveur = await appareil.gatt.connect();
+    const service = await serveur.getPrimaryService(SVC);
+    cmd = await service.getCharacteristic(CMD);
+    btnOuvrir.disabled = false;
+    btnConn.textContent = "Connecté ✓";
+    statut("Prêt.");
+  } catch (e) { statut("Échec : " + e.message); }
+}
+
+async function ouvrir() {
+  if (!cmd) return;
+  try {
+    await cmd.writeValueWithResponse(new Uint8Array([1]));
+    statut("Ordre envoyé ✓");
+  } catch (e) { statut("Erreur : " + e.message); }
+}
+
+btnConn.onclick = connecter;
+btnOuvrir.onclick = ouvrir;
+</script>
+</body>
+</html>
