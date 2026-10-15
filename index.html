@@ -3,64 +3,147 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Atelier</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Portes Atelier</title>
 <style>
+  :root { --bg:#111; --card:#1c1c1e; --txt:#f2f2f2; --mut:#8e8e93;
+          --open:#30d158; --close:#0a84ff; --stop:#ff453a; --warn:#ff9f0a; }
   * { box-sizing:border-box; -webkit-user-select:none; user-select:none;
-      -webkit-tap-highlight-color:transparent; }
-  body { margin:0; background:#111; color:#f2f2f2; padding:20px;
-         font:18px -apple-system, system-ui, sans-serif; }
-  h1 { font-size:22px; margin:0 0 16px; }
-  button { width:100%; border:0; border-radius:18px; font-weight:700; color:#fff; }
-  #conn { padding:18px; font-size:20px; background:#0a84ff; }
-  #ouvrir { margin-top:24px; padding:70px 0; font-size:34px; background:#30d158; color:#000; }
-  #ouvrir:disabled { opacity:.3; }
-  #ouvrir:active { transform:scale(.97); }
-  #statut { color:#8e8e93; margin-top:12px; min-height:24px; }
+      -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:16px -apple-system, system-ui, sans-serif; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 12px; }
+  #conn { width:100%; padding:16px; font-size:18px; border:0; border-radius:14px;
+          background:var(--close); color:#fff; font-weight:600; }
+  #status { color:var(--mut); margin:10px 2px 16px; min-height:20px; }
+  .door { background:var(--card); border-radius:18px; padding:16px; margin-bottom:16px; }
+  .head { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; }
+  .name { font-weight:600; font-size:18px; }
+  .badge { padding:4px 10px; border-radius:20px; font-size:14px; background:#333; }
+  .badge.open { background:var(--open); color:#000; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  button.act { padding:26px 0; font-size:20px; font-weight:700; border:0; border-radius:14px;
+               color:#fff; touch-action:none; }
+  button.act:disabled { opacity:.35; }
+  .o { background:var(--open); color:#000; }
+  .c { background:var(--close); }
+  .c.hold.pressing { background:var(--warn); color:#000; }
+  .s { background:var(--stop); grid-column:1 / span 2; }
+  .hint { color:var(--mut); font-size:13px; margin-top:8px; }
 </style>
 </head>
 <body>
-<h1>Atelier <small style="color:#8e8e93;font-size:14px">v3</small></h1>
+<h1>Portes atelier <small style="color:#8e8e93;font-size:14px">v4</small></h1>
 <button id="conn">Se connecter</button>
-<div id="statut">Approche-toi de l'atelier.</div>
-<button id="ouvrir" disabled>OUVRIR</button>
+<div id="status">Approche-toi de l'atelier puis connecte-toi.</div>
+<div id="doors"></div>
 
 <script>
-const SVC = "6f1d0001-7b3a-4c2e-9a51-2c0a8e5d4b10";
-const CMD = "6f1d0002-7b3a-4c2e-9a51-2c0a8e5d4b10";
-let appareil, cmd;
-const statut = t => document.getElementById("statut").textContent = t;
-const btnOuvrir = document.getElementById("ouvrir");
-const btnConn = document.getElementById("conn");
+const SVC   = "6f1d0001-7b3a-4c2e-9a51-2c0a8e5d4b10";
+const CMD   = "6f1d0002-7b3a-4c2e-9a51-2c0a8e5d4b10";
+const STATE = "6f1d0003-7b3a-4c2e-9a51-2c0a8e5d4b10";
+const C = { OPEN:1, CLOSE:2, STOP:3, HOLD:4, RELEASE:5 };
+const NAMES = ["Porte 1", "Porte 2"];
 
-async function connecter() {
+let device, cmdChr, stateChr, chain = Promise.resolve();
+let holdFlags = [false, false];
+const $ = id => document.getElementById(id);
+const setStatus = t => $("status").textContent = t;
+
+// écritures sérialisées (une opération GATT à la fois)
+function send(door, cmd) {
+  if (!cmdChr) return;
+  chain = chain.then(() => cmdChr.writeValueWithResponse(new Uint8Array([door, cmd])))
+               .catch(e => setStatus("Erreur : " + e.message));
+}
+
+function render() {
+  const wrap = $("doors"); wrap.innerHTML = "";
+  NAMES.forEach((n, i) => {
+    const hold = holdFlags[i];
+    wrap.insertAdjacentHTML("beforeend", `
+      <div class="door">
+        <div class="head"><span class="name">${n}</span>
+          <span class="badge" id="b${i}">—</span></div>
+        <div class="row">
+          <button class="act o" id="o${i}" disabled>Ouvrir</button>
+          <button class="act c ${hold ? "hold" : ""}" id="c${i}" disabled>
+            ${hold ? "Maintenir<br>pour fermer" : "Fermer"}</button>
+          <button class="act s" id="s${i}" disabled>STOP</button>
+        </div>
+        ${hold ? '<div class="hint">Homme mort : la porte s\'arrête dès que tu lâches.</div>' : ""}
+      </div>`);
+    $("o"+i).onclick = () => send(i, C.OPEN);
+    $("s"+i).onclick = () => send(i, C.STOP);
+    hold ? bindHold($("c"+i), i) : $("c"+i).onclick = () => send(i, C.CLOSE);
+  });
+}
+
+function bindHold(btn, i) {
+  let timer = null;
+  const start = e => {
+    e.preventDefault();
+    if (timer) return;
+    btn.classList.add("pressing");
+    send(i, C.HOLD);
+    timer = setInterval(() => send(i, C.HOLD), 150);
+  };
+  const stop = () => {
+    if (!timer) return;
+    clearInterval(timer); timer = null;
+    btn.classList.remove("pressing");
+    send(i, C.RELEASE);
+  };
+  btn.addEventListener("pointerdown", start);
+  ["pointerup","pointercancel","pointerleave","lostpointercapture"].forEach(ev => btn.addEventListener(ev, stop));
+  btn.addEventListener("contextmenu", e => e.preventDefault());
+  document.addEventListener("visibilitychange", stop);
+  window.addEventListener("blur", stop);
+}
+
+function showState(dv) {
+  const open = [dv.getUint8(0), dv.getUint8(1)];
+  const hold = [!!dv.getUint8(2), !!dv.getUint8(3)];
+  if (hold[0] !== holdFlags[0] || hold[1] !== holdFlags[1]) { holdFlags = hold; render(); enable(true); }
+  open.forEach((o, i) => {
+    const b = $("b"+i);
+    if (o === 2) { b.textContent = "État non câblé"; b.className = "badge"; return; }
+    b.textContent = o ? "Ouverte" : "Pas ouverte";
+    b.className = "badge" + (o ? " open" : "");
+  });
+}
+
+function enable(on) {
+  document.querySelectorAll("button.act").forEach(b => b.disabled = !on);
+}
+
+async function connect() {
   try {
-    if (!navigator.bluetooth) { statut("Ouvre cette page dans l'appli Bluefy."); return; }
-    statut("Recherche…");
-    appareil = appareil || await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [SVC] });
-    appareil.addEventListener("gattserverdisconnected", () => {
-      cmd = null; btnOuvrir.disabled = true;
-      btnConn.textContent = "Se reconnecter"; statut("Déconnecté.");
+    if (!navigator.bluetooth) { setStatus("Ouvre cette page dans l'app Bluefy."); return; }
+    setStatus("Recherche…");
+    device = device || await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [SVC] });
+    device.addEventListener("gattserverdisconnected", () => {
+      cmdChr = stateChr = null; enable(false);
+      $("conn").textContent = "Se reconnecter"; setStatus("Déconnecté.");
     });
-    statut("Connexion…");
-    const serveur = await appareil.gatt.connect();
-    const service = await serveur.getPrimaryService(SVC);
-    cmd = await service.getCharacteristic(CMD);
-    btnOuvrir.disabled = false;
-    btnConn.textContent = "Connecté ✓";
-    statut("Prêt.");
-  } catch (e) { statut("Échec : " + e.message); }
+    setStatus("Connexion…");
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    cmdChr   = await svc.getCharacteristic(CMD);
+    stateChr = await svc.getCharacteristic(STATE);
+    showState(await stateChr.readValue());          // déclenche l'appairage PIN la 1re fois
+    await stateChr.startNotifications();
+    stateChr.addEventListener("characteristicvaluechanged", e => showState(e.target.value));
+    enable(true);
+    $("conn").textContent = "Connecté ✓";
+    setStatus("Prêt.");
+  } catch (e) {
+    setStatus("Échec : " + e.message);
+  }
 }
 
-async function ouvrir() {
-  if (!cmd) return;
-  try {
-    await cmd.writeValueWithResponse(new Uint8Array([1]));
-    statut("Ordre envoyé ✓");
-  } catch (e) { statut("Erreur : " + e.message); }
-}
-
-btnConn.onclick = connecter;
-btnOuvrir.onclick = ouvrir;
+$("conn").onclick = connect;
+render();
 </script>
 </body>
 </html>
