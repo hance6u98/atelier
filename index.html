@@ -33,9 +33,9 @@
 </style>
 </head>
 <body>
-<h1>Portes atelier <small style="color:#8e8e93;font-size:14px">v4</small></h1>
+<h1>Portes atelier <small style="color:#8e8e93;font-size:14px">v5</small></h1>
 <button id="conn">Se connecter</button>
-<div id="status">Approche-toi de l'atelier puis connecte-toi.</div>
+<div id="status">Appuie directement sur Ouvrir.</div>
 <div id="doors"></div>
 
 <script>
@@ -45,15 +45,61 @@ const STATE = "6f1d0003-7b3a-4c2e-9a51-2c0a8e5d4b10";
 const C = { OPEN:1, CLOSE:2, STOP:3, HOLD:4, RELEASE:5 };
 const NAMES = ["Porte 1", "Porte 2"];
 
-let device, cmdChr, stateChr, chain = Promise.resolve();
-let holdFlags = [false, false];
+let device, cmdChr, stateChr, chain = Promise.resolve(), connecting = null;
+let holdFlags = [true, true];
 const $ = id => document.getElementById(id);
 const setStatus = t => $("status").textContent = t;
 
-// écritures sérialisées (une opération GATT à la fois)
-function send(door, cmd) {
-  if (!cmdChr) return;
-  chain = chain.then(() => cmdChr.writeValueWithResponse(new Uint8Array([door, cmd])))
+// Connexion automatique : retrouve l'atelier déjà choisi, sinon ouvre la liste
+function ensureConnected(allowChooser) {
+  if (cmdChr) return Promise.resolve(true);
+  if (connecting) return connecting;
+  connecting = (async () => {
+    try {
+      if (!navigator.bluetooth) { setStatus("Ouvre cette page dans l'app Bluefy."); return false; }
+      if (!device && navigator.bluetooth.getDevices) {
+        const known = await navigator.bluetooth.getDevices();
+        device = known.find(d => (d.name || "").startsWith("Atelier")) || null;
+      }
+      if (!device) {
+        if (!allowChooser) { setStatus("Appuie sur un bouton pour te connecter."); return false; }
+        setStatus("Choisis Atelier-Portes dans la liste…");
+        device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [SVC] });
+        device.addEventListener("gattserverdisconnected", onDisconnected);
+      } else if (!device._ecoute) {
+        device.addEventListener("gattserverdisconnected", onDisconnected);
+      }
+      device._ecoute = true;
+      setStatus("Connexion…");
+      const server = await device.gatt.connect();
+      const svc = await server.getPrimaryService(SVC);
+      cmdChr   = await svc.getCharacteristic(CMD);
+      stateChr = await svc.getCharacteristic(STATE);
+      showState(await stateChr.readValue());
+      await stateChr.startNotifications();
+      stateChr.addEventListener("characteristicvaluechanged", e => showState(e.target.value));
+      $("conn").textContent = "Connecté ✓";
+      setStatus("Prêt.");
+      return true;
+    } catch (e) {
+      setStatus("Pas de connexion : " + e.message + " (approche-toi)");
+      return false;
+    } finally { connecting = null; }
+  })();
+  return connecting;
+}
+
+function onDisconnected() {
+  cmdChr = stateChr = null;
+  $("conn").textContent = "Se connecter";
+  setStatus("Hors de portée – reconnexion au prochain appui.");
+}
+
+// écritures sérialisées ; se connecte d'abord si besoin
+async function send(door, cmd) {
+  if (!cmdChr && !(await ensureConnected(true))) return;
+  chain = chain.then(() => cmdChr && cmdChr.writeValueWithResponse(new Uint8Array([door, cmd])))
+               .then(() => { if (cmd === C.OPEN) setStatus("Ouverture envoyée ✓"); })
                .catch(e => setStatus("Erreur : " + e.message));
 }
 
@@ -66,10 +112,10 @@ function render() {
         <div class="head"><span class="name">${n}</span>
           <span class="badge" id="b${i}">—</span></div>
         <div class="row">
-          <button class="act o" id="o${i}" disabled>Ouvrir</button>
-          <button class="act c ${hold ? "hold" : ""}" id="c${i}" disabled>
+          <button class="act o" id="o${i}">Ouvrir</button>
+          <button class="act c ${hold ? "hold" : ""}" id="c${i}">
             ${hold ? "Maintenir<br>pour fermer" : "Fermer"}</button>
-          <button class="act s" id="s${i}" disabled>STOP</button>
+          <button class="act s" id="s${i}">STOP</button>
         </div>
         ${hold ? '<div class="hint">Homme mort : la porte s\'arrête dès que tu lâches.</div>' : ""}
       </div>`);
@@ -81,17 +127,19 @@ function render() {
 
 function bindHold(btn, i) {
   let timer = null;
-  const start = e => {
+  const start = async e => {
     e.preventDefault();
     if (timer) return;
     btn.classList.add("pressing");
+    if (!cmdChr && !(await ensureConnected(true))) { btn.classList.remove("pressing"); return; }
+    if (!btn.classList.contains("pressing")) return;   // doigt déjà levé pendant la connexion
     send(i, C.HOLD);
     timer = setInterval(() => send(i, C.HOLD), 150);
   };
   const stop = () => {
+    btn.classList.remove("pressing");
     if (!timer) return;
     clearInterval(timer); timer = null;
-    btn.classList.remove("pressing");
     send(i, C.RELEASE);
   };
   btn.addEventListener("pointerdown", start);
@@ -104,7 +152,7 @@ function bindHold(btn, i) {
 function showState(dv) {
   const open = [dv.getUint8(0), dv.getUint8(1)];
   const hold = [!!dv.getUint8(2), !!dv.getUint8(3)];
-  if (hold[0] !== holdFlags[0] || hold[1] !== holdFlags[1]) { holdFlags = hold; render(); enable(true); }
+  if (hold[0] !== holdFlags[0] || hold[1] !== holdFlags[1]) { holdFlags = hold; render(); }
   open.forEach((o, i) => {
     const b = $("b"+i);
     if (o === 2) { b.textContent = "État non câblé"; b.className = "badge"; return; }
@@ -113,37 +161,11 @@ function showState(dv) {
   });
 }
 
-function enable(on) {
-  document.querySelectorAll("button.act").forEach(b => b.disabled = !on);
-}
-
-async function connect() {
-  try {
-    if (!navigator.bluetooth) { setStatus("Ouvre cette page dans l'app Bluefy."); return; }
-    setStatus("Recherche…");
-    device = device || await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [SVC] });
-    device.addEventListener("gattserverdisconnected", () => {
-      cmdChr = stateChr = null; enable(false);
-      $("conn").textContent = "Se reconnecter"; setStatus("Déconnecté.");
-    });
-    setStatus("Connexion…");
-    const server = await device.gatt.connect();
-    const svc = await server.getPrimaryService(SVC);
-    cmdChr   = await svc.getCharacteristic(CMD);
-    stateChr = await svc.getCharacteristic(STATE);
-    showState(await stateChr.readValue());          // déclenche l'appairage PIN la 1re fois
-    await stateChr.startNotifications();
-    stateChr.addEventListener("characteristicvaluechanged", e => showState(e.target.value));
-    enable(true);
-    $("conn").textContent = "Connecté ✓";
-    setStatus("Prêt.");
-  } catch (e) {
-    setStatus("Échec : " + e.message);
-  }
-}
-
-$("conn").onclick = connect;
+$("conn").onclick = () => ensureConnected(true);
 render();
+// à l'ouverture de la page, et à chaque retour dans l'appli : connexion silencieuse
+ensureConnected(false);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) ensureConnected(false); });
 </script>
 </body>
 </html>
