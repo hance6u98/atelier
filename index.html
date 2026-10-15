@@ -36,7 +36,7 @@ async function connecter() {
   try {
     if (!navigator.bluetooth) { statut("Ouvre cette page dans l'appli Bluefy."); return; }
     statut("Recherche…");
-    appareil = appareil || await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+    appareil = appareil || await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: "Atelier" }], optionalServices: [SVC] });
     appareil.addEventListener("gattserverdisconnected", () => {
       cmd = null; btnOuvrir.disabled = true;
       btnConn.textContent = "Se reconnecter"; statut("Déconnecté.");
