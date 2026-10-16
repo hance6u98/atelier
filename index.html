@@ -33,9 +33,9 @@
 </style>
 </head>
 <body>
-<h1>Portes atelier <small style="color:#8e8e93;font-size:14px">v6</small></h1>
+<h1>Portes atelier <small style="color:#8e8e93;font-size:14px">v7</small></h1>
 <button id="conn">Se connecter</button>
-<div id="status">Appuie directement sur Ouvrir.</div>
+<div id="status">Appuie sur « Se connecter » ou directement sur Ouvrir.</div>
 <div id="doors"></div>
 
 <script>
@@ -52,26 +52,20 @@ let holdFlags = [true, true];
 const $ = id => document.getElementById(id);
 const setStatus = t => $("status").textContent = t;
 
-// Connexion automatique : retrouve l'atelier déjà choisi, sinon ouvre la liste
+// Connexion : la liste Bluetooth doit s'ouvrir DIRECTEMENT sur l'appui (exigence iOS/Bluefy),
+// donc requestDevice est appelé en tout premier, sans rien attendre avant.
 function ensureConnected(allowChooser) {
   if (cmdChr) return Promise.resolve(true);
   if (connecting) return connecting;
+  if (!navigator.bluetooth) { setStatus("Ouvre cette page dans l'app Bluefy."); return Promise.resolve(false); }
+  if (!device && !allowChooser) return Promise.resolve(false);
+  const choix = device ? Promise.resolve(device)
+                       : navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [SVC] });
   connecting = (async () => {
     try {
-      if (!navigator.bluetooth) { setStatus("Ouvre cette page dans l'app Bluefy."); return false; }
-      if (!device && navigator.bluetooth.getDevices) {
-        const known = await navigator.bluetooth.getDevices();
-        device = known.find(d => (d.name || "").startsWith("Atelier")) || null;
-      }
-      if (!device) {
-        if (!allowChooser) { setStatus("Appuie sur un bouton pour te connecter."); return false; }
-        setStatus("Choisis Atelier-Portes dans la liste…");
-        device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [SVC] });
-        device.addEventListener("gattserverdisconnected", onDisconnected);
-      } else if (!device._ecoute) {
-        device.addEventListener("gattserverdisconnected", onDisconnected);
-      }
-      device._ecoute = true;
+      setStatus("Choisis Atelier-Portes dans la liste…");
+      const d = await choix;
+      if (d !== device) { device = d; device.addEventListener("gattserverdisconnected", onDisconnected); }
       setStatus("Connexion…");
       const server = await delai(device.gatt.connect(), 8000);
       const svc = await server.getPrimaryService(SVC);
@@ -86,7 +80,6 @@ function ensureConnected(allowChooser) {
     } catch (e) {
       setStatus("Pas de connexion : " + e.message + " – réessaie");
       try { device && device.gatt.connected && device.gatt.disconnect(); } catch (_) {}
-      if (allowChooser) device = null;   // au prochain appui : nouvelle liste
       return false;
     } finally { connecting = null; }
   })();
@@ -101,7 +94,7 @@ function onDisconnected() {
 
 // écritures sérialisées ; se connecte d'abord si besoin
 async function send(door, cmd) {
-  if (!cmdChr && !(await ensureConnected(true))) return;
+  if (!cmdChr && !(await ensureConnected(true))) return;   // ensureConnected ouvre la liste immédiatement
   chain = chain.then(() => cmdChr && cmdChr.writeValueWithResponse(new Uint8Array([door, cmd])))
                .then(() => { if (cmd === C.OPEN) setStatus("Ouverture envoyée ✓"); })
                .catch(e => setStatus("Erreur : " + e.message));
@@ -132,10 +125,10 @@ function render() {
 function bindHold(btn, i) {
   let timer = null;
   const start = async e => {
-    e.preventDefault();
     if (timer) return;
+    const pret = cmdChr ? true : ensureConnected(true);   // appelé tout de suite, dans le geste
     btn.classList.add("pressing");
-    if (!cmdChr && !(await ensureConnected(true))) { btn.classList.remove("pressing"); return; }
+    if (!(await pret)) { btn.classList.remove("pressing"); return; }
     if (!btn.classList.contains("pressing")) return;   // doigt déjà levé pendant la connexion
     send(i, C.HOLD);
     timer = setInterval(() => send(i, C.HOLD), 150);
@@ -167,8 +160,7 @@ function showState(dv) {
 
 $("conn").onclick = () => ensureConnected(true);
 render();
-// à l'ouverture de la page, et à chaque retour dans l'appli : connexion silencieuse
-ensureConnected(false);
+// retour dans l'appli : reconnexion silencieuse à l'atelier déjà choisi
 document.addEventListener("visibilitychange", () => { if (!document.hidden) ensureConnected(false); });
 </script>
 </body>
