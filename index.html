@@ -33,7 +33,7 @@
 </style>
 </head>
 <body>
-<h1>Portes atelier <small style="color:#8e8e93;font-size:14px">v5</small></h1>
+<h1>Portes atelier <small style="color:#8e8e93;font-size:14px">v6</small></h1>
 <button id="conn">Se connecter</button>
 <div id="status">Appuie directement sur Ouvrir.</div>
 <div id="doors"></div>
@@ -46,6 +46,8 @@ const C = { OPEN:1, CLOSE:2, STOP:3, HOLD:4, RELEASE:5 };
 const NAMES = ["Porte 1", "Porte 2"];
 
 let device, cmdChr, stateChr, chain = Promise.resolve(), connecting = null;
+// une tentative bloquée ne doit jamais figer les boutons
+const delai = (p, ms) => Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error("délai dépassé")), ms))]);
 let holdFlags = [true, true];
 const $ = id => document.getElementById(id);
 const setStatus = t => $("status").textContent = t;
@@ -71,18 +73,20 @@ function ensureConnected(allowChooser) {
       }
       device._ecoute = true;
       setStatus("Connexion…");
-      const server = await device.gatt.connect();
+      const server = await delai(device.gatt.connect(), 8000);
       const svc = await server.getPrimaryService(SVC);
       cmdChr   = await svc.getCharacteristic(CMD);
       stateChr = await svc.getCharacteristic(STATE);
-      showState(await stateChr.readValue());
+      showState(await delai(stateChr.readValue(), 30000));   // 30 s : le temps de taper le PIN
       await stateChr.startNotifications();
       stateChr.addEventListener("characteristicvaluechanged", e => showState(e.target.value));
       $("conn").textContent = "Connecté ✓";
       setStatus("Prêt.");
       return true;
     } catch (e) {
-      setStatus("Pas de connexion : " + e.message + " (approche-toi)");
+      setStatus("Pas de connexion : " + e.message + " – réessaie");
+      try { device && device.gatt.connected && device.gatt.disconnect(); } catch (_) {}
+      if (allowChooser) device = null;   // au prochain appui : nouvelle liste
       return false;
     } finally { connecting = null; }
   })();
