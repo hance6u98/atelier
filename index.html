@@ -33,7 +33,7 @@
 </style>
 </head>
 <body>
-<h1>Portes atelier <small style="color:#8e8e93;font-size:14px">v7</small></h1>
+<h1>Portes atelier <small style="color:#8e8e93;font-size:14px">v8</small></h1>
 <button id="conn">Se connecter</button>
 <div id="status">Appuie sur « Se connecter » ou directement sur Ouvrir.</div>
 <div id="doors"></div>
@@ -80,6 +80,8 @@ function ensureConnected(allowChooser) {
     } catch (e) {
       setStatus("Pas de connexion : " + e.message + " – réessaie");
       try { device && device.gatt.connected && device.gatt.disconnect(); } catch (_) {}
+      device = null;          // appareil "périmé" : au prochain appui, nouvelle liste
+      $("conn").textContent = "Se connecter";
       return false;
     } finally { connecting = null; }
   })();
@@ -88,6 +90,7 @@ function ensureConnected(allowChooser) {
 
 function onDisconnected() {
   cmdChr = stateChr = null;
+  device = null;              // après une coupure, on repart d'une connexion neuve
   $("conn").textContent = "Se connecter";
   setStatus("Hors de portée – reconnexion au prochain appui.");
 }
